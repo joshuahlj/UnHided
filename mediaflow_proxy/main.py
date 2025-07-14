@@ -38,7 +38,7 @@ app = FastAPI()
 app.add_middleware(NormalizePathMiddleware)
 
 # Optional: Redirect double slashes instead of rewriting (commented out)
-"""
+
 @app.middleware("http")
 async def redirect_double_slash(request: Request, call_next):
     path = request.url.path
@@ -47,7 +47,7 @@ async def redirect_double_slash(request: Request, call_next):
         new_url = str(request.url).replace(path, new_path)
         return RedirectResponse(new_url, status_code=307)
     return await call_next(request)
-"""
+
 
 # Debugging middleware to log incoming paths
 @app.middleware("http")
