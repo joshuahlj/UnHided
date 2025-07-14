@@ -1,11 +1,14 @@
 import asyncio
 import logging
+import re
 from importlib import resources
 
 from fastapi import FastAPI, Depends, Security, HTTPException
 from fastapi.security import APIKeyQuery, APIKeyHeader
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response, RedirectResponse
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import RedirectResponse
 from starlette.staticfiles import StaticFiles
 
 from mediaflow_proxy.configs import settings
@@ -15,10 +18,26 @@ from mediaflow_proxy.schemas import GenerateUrlRequest, GenerateMultiUrlRequest,
 from mediaflow_proxy.utils.crypto_utils import EncryptionHandler, EncryptionMiddleware
 from mediaflow_proxy.utils.http_utils import encode_mediaflow_proxy_url
 
+# --- Middleware to normalize double slashes ---
+class NormalizePathMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        scope = request.scope
+        original_path = scope["path"]
+        normalized_path = re.sub(r"/{2,}", "/", original_path)
+        if original_path != normalized_path:
+            scope["path"] = normalized_path
+        return await call_next(Request(scope, request.receive))
+# -----------------------------------------------
+
 logging.basicConfig(level=settings.log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 app = FastAPI()
+
+# ✅ Add NormalizePathMiddleware before other middleware or routes
+app.add_middleware(NormalizePathMiddleware)
+
 api_password_query = APIKeyQuery(name="api_password", auto_error=False)
 api_password_header = APIKeyHeader(name="api_password", auto_error=False)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,22 +50,10 @@ app.add_middleware(UIAccessControlMiddleware)
 
 
 async def verify_api_key(api_key: str = Security(api_password_query), api_key_alt: str = Security(api_password_header)):
-    """
-    Verifies the API key for the request.
-
-    Args:
-        api_key (str): The API key to validate.
-        api_key_alt (str): The alternative API key to validate.
-
-    Raises:
-        HTTPException: If the API key is invalid.
-    """
     if not settings.api_password:
         return
-
     if api_key == settings.api_password or api_key_alt == settings.api_password:
         return
-
     raise HTTPException(status_code=403, detail="Could not validate credentials")
 
 
@@ -75,9 +82,6 @@ async def show_speedtest_page():
 async def generate_encrypted_or_encoded_url(
     request: GenerateUrlRequest,
 ):
-    """
-    Generate a single encoded URL based on the provided request.
-    """
     return {"encoded_url": (await generate_url(request))["url"]}
 
 
@@ -88,15 +92,12 @@ async def generate_encrypted_or_encoded_url(
     tags=["url"],
 )
 async def generate_url(request: GenerateUrlRequest):
-    """Generate a single encoded URL based on the provided request."""
     encryption_handler = EncryptionHandler(request.api_password) if request.api_password else None
 
-    # Ensure api_password is in query_params if provided
     query_params = request.query_params.copy()
     if "api_password" not in query_params and request.api_password:
         query_params["api_password"] = request.api_password
 
-    # Convert IP to string if provided
     ip_str = str(request.ip) if request.ip else None
 
     encoded_url = encode_mediaflow_proxy_url(
@@ -122,22 +123,14 @@ async def generate_url(request: GenerateUrlRequest):
     tags=["url"],
 )
 async def generate_urls(request: GenerateMultiUrlRequest):
-    """Generate multiple encoded URLs with shared common parameters."""
-    # Set up encryption handler if password is provided
     encryption_handler = EncryptionHandler(request.api_password) if request.api_password else None
-
-    # Convert IP to string if provided
     ip_str = str(request.ip) if request.ip else None
 
-    async def _process_url_item(
-        url_item: MultiUrlRequestItem,
-    ) -> str:
-        """Process a single URL item with common parameters and return the encoded URL."""
+    async def _process_url_item(url_item: MultiUrlRequestItem) -> str:
         query_params = url_item.query_params.copy()
         if "api_password" not in query_params and request.api_password:
             query_params["api_password"] = request.api_password
 
-        # Generate the encoded URL
         return encode_mediaflow_proxy_url(
             mediaflow_proxy_url=request.mediaflow_proxy_url,
             endpoint=url_item.endpoint,
@@ -156,17 +149,18 @@ async def generate_urls(request: GenerateMultiUrlRequest):
     return {"urls": encoded_urls}
 
 
+# Include routers
 app.include_router(proxy_router, prefix="/proxy", tags=["proxy"], dependencies=[Depends(verify_api_key)])
 app.include_router(extractor_router, prefix="/extractor", tags=["extractors"], dependencies=[Depends(verify_api_key)])
 app.include_router(speedtest_router, prefix="/speedtest", tags=["speedtest"], dependencies=[Depends(verify_api_key)])
 
+# Mount static assets
 static_path = resources.files("mediaflow_proxy").joinpath("static")
 app.mount("/", StaticFiles(directory=str(static_path), html=True), name="static")
 
 
 def run():
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=8888, log_level="info", workers=3)
 
 
