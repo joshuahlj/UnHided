@@ -190,3 +190,19 @@ def run():
 
 if __name__ == "__main__":
     run()
+
+from fastapi.responses import RedirectResponse
+import re
+
+@app.middleware("http")
+async def force_fix_double_slash_path(request: Request, call_next):
+    raw_path = request.scope["path"]
+
+    if raw_path.startswith("//proxy"):
+        # Rewrite path to /proxy
+        fixed_path = re.sub(r"^/+", "/", raw_path)
+        fixed_url = str(request.url).replace(raw_path, fixed_path)
+        print(f"Redirecting {raw_path} → {fixed_path}")
+        return RedirectResponse(url=fixed_url, status_code=307)
+
+    return await call_next(request)
