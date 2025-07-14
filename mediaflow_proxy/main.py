@@ -18,22 +18,43 @@ from mediaflow_proxy.schemas import GenerateUrlRequest, GenerateMultiUrlRequest,
 from mediaflow_proxy.utils.crypto_utils import EncryptionHandler, EncryptionMiddleware
 from mediaflow_proxy.utils.http_utils import encode_mediaflow_proxy_url
 
-# --- Middleware to normalize double slashes ---
+logging.basicConfig(level=settings.log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+# --- Middleware to normalize double slashes in path ---
 class NormalizePathMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        scope = request.scope
+        scope = dict(request.scope)  # shallow copy
         original_path = scope["path"]
         normalized_path = re.sub(r"/{2,}", "/", original_path)
         if original_path != normalized_path:
             scope["path"] = normalized_path
-        return await call_next(Request(scope, request.receive))
-# -----------------------------------------------
+            request = Request(scope, request.receive)
+        return await call_next(request)
+# -------------------------------------------------------
 
-logging.basicConfig(level=settings.log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 app = FastAPI()
 
-# ✅ Add NormalizePathMiddleware before other middleware or routes
+# Add NormalizePathMiddleware first
 app.add_middleware(NormalizePathMiddleware)
+
+# Optional: Redirect double slashes instead of rewriting (commented out)
+"""
+@app.middleware("http")
+async def redirect_double_slash(request: Request, call_next):
+    path = request.url.path
+    if "//" in path:
+        new_path = re.sub(r"/{2,}", "/", path)
+        new_url = str(request.url).replace(path, new_path)
+        return RedirectResponse(new_url, status_code=307)
+    return await call_next(request)
+"""
+
+# Debugging middleware to log incoming paths
+@app.middleware("http")
+async def log_path(request: Request, call_next):
+    print(f"Incoming path: {request.url.path}")
+    response = await call_next(request)
+    return response
 
 api_password_query = APIKeyQuery(name="api_password", auto_error=False)
 api_password_header = APIKeyHeader(name="api_password", auto_error=False)
@@ -161,6 +182,9 @@ app.mount("/", StaticFiles(directory=str(static_path), html=True), name="static"
 
 def run():
     import uvicorn
+    print("Registered routes:")
+    for r in app.routes:
+        print(r.path)
     uvicorn.run(app, host="0.0.0.0", port=8888, log_level="info", workers=3)
 
 
